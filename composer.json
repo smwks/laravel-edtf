@@ -1,0 +1,46 @@
+{
+    "name": "smwks/laravel-edtf",
+    "description": "Fuzzy and partial historical dates (EDTF) for Eloquent and Filament.",
+    "license": "MIT",
+    "type": "library",
+    "require": {
+        "php": "^8.3",
+        "illuminate/support": "^13.0",
+        "illuminate/database": "^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^11.2",
+        "pestphp/pest": "^5.1",
+        "filament/forms": "^5.0",
+        "filament/schemas": "^5.0",
+        "filament/support": "^5.0",
+        "livewire/livewire": "^4.4"
+    },
+    "suggest": {
+        "filament/forms": "Required to use Smwks\\LaravelEdtf\\Filament\\EdtfDatePicker."
+    },
+    "autoload": {
+        "psr-4": {
+            "Smwks\\LaravelEdtf\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Smwks\\LaravelEdtf\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Smwks\\LaravelEdtf\\LaravelEdtfServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
