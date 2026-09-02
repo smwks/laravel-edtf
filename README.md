@@ -62,52 +62,14 @@ The column stores `{"edtf": "1926~", "min": "1926-01-01", "max": "1926-12-31"}`,
 so range queries ("born in the 1920s") filter on real dates rather than parsing
 EDTF strings per row.
 
-### Displaying a human-readable date
-
-There is no built-in humanizer. `Edtf` deliberately exposes the parts and lets
-you format to taste — the important thing is to format *against the precision*,
-so a year- or month-precision value never prints a filler day or month:
-
-```php
-use Smwks\LaravelEdtf\Edtf;
-use Smwks\LaravelEdtf\Precision;
-
-function humanizeEdtf(Edtf $edtf): string
-{
-    $date = $edtf->bestGuess();
-
-    $text = match ($edtf->precision()) {
-        Precision::Day   => $date->format('F j, Y'), // March 3, 2021
-        Precision::Month => $date->format('F Y'),    // March 2021
-        Precision::Year  => $date->format('Y'),      // 2021
-    };
-
-    if ($edtf->isApproximate()) {
-        $text = "c. {$text}";
-    }
-
-    if ($edtf->isUncertain()) {
-        $text .= '?';
-    }
-
-    return $text;
-}
-```
-
-`bestGuess()` is anchored to the start of the precision (`2021-03` →
-`2021-03-01`, `2021` → `2021-01-01`), so it is safe to `format()` once the
-`match` has picked the right mask. For unspecified digits (`192X`) it collapses
-to the low end; show the span with `min()`/`max()` instead:
-
-```php
-$edtf->min()->format('Y').'–'.$edtf->max()->format('Y'); // 2010–2019
-```
-
 ### Filament
 
-`EdtfDatePicker` replaces a plain `DatePicker`. One control picks the precision
-and takes what's known, and on save it writes both columns from that single
-input — `{name}` from `bestGuess()` and `{name}_edtf` from the full value:
+`EdtfDatePicker` replaces a plain `DatePicker`. It renders as a single
+text input holding the raw EDTF string, live-validated against the package
+`Parser`, with a humanized reading ("circa 1926", "February 1926
+(uncertain)") shown beneath it. On save it writes both columns from that
+one value — `{name}` from `bestGuess()` and `{name}_edtf` from the full
+value:
 
 ```php
 use Smwks\LaravelEdtf\Filament\EdtfDatePicker;
@@ -115,12 +77,48 @@ use Smwks\LaravelEdtf\Filament\EdtfDatePicker;
 EdtfDatePicker::make('born_on')
 ```
 
-The field's sub-inputs are stock `Select`/`TextInput` components — it can
-hydrate and display any value the `Parser` accepts, but it can only *save*
-plain, fully-specified values (`1926`, `1926-02`, `1937-11-25`). Qualifiers
-(`1926~`) and unspecified digits (`192X`) are preserved on read but are not
-yet re-editable through this field; assign them directly on the model when
-you need them. A qualifier-aware UI is a planned follow-up.
+A suffix "Date helper" button opens a modal that walks the admin from a
+kind of date (exact date, month & year, year only, decade, century) to a
+valid EDTF value, with a Certainty control for approximate/uncertain
+markers and an advanced disclosure for per-component qualifiers and
+unknown digits.
+
+#### Expected precision
+
+`EdtfDatePicker::make('born_on')->expectedPrecision('year')` (or
+`->expectedPrecision(Smwks\LaravelEdtf\Precision::Year)`) tells the field the
+accuracy you expect. It is a hint, not a lock: the helper modal pre-selects
+and fronts the matching Kind (`year` → *Year only*, `month` → *Month & year*,
+`day` → *Exact date*) and every other Kind stays available, and the field's
+hint line and the modal preview switch to "sometime during 1926" /
+"sometime in February 1926" phrasing (`Humanizer::toApproximateReadable()`).
+
+#### Did-you-mean suggestions
+
+When a value typed into the field is not valid EDTF but can be read as a
+real date — `1940/01/12`, `5/8/22`, `Jan 12, 1940`, `circa 1950`,
+`the 1960s`, `20th century` — a `Use "…"` link appears next to the label
+offering the coerced value; one click applies it. The coercion is
+`Smwks\LaravelEdtf\EdtfGuesser::guess(string): ?string`, usable on its own.
+It is English-only and best-effort: `early`/`mid`/`late` are dropped to the
+bare period, spelled-out ordinals and non-English months are not handled,
+a two-digit year uses the strtotime pivot (`00`–`69` → `20xx`, `70`–`99` →
+`19xx`), and ambiguous all-numeric input is read month-then-day unless the
+first value cannot be a month.
+
+An invalid value shows an inline "not a supported date format" error
+beneath the field as you type (via `->live()` validation); it clears once
+the value parses.
+
+The field can hydrate, display, edit, and **save** any value the `Parser`
+accepts — plain dates, qualifiers (`1926~`, `1984?`, `1926%`), unspecified
+digits (`192X`, `1XXX-12`), and per-component qualifiers
+(`?2004-06-~11`).
+
+The `Smwks\LaravelEdtf\Rules\EdtfRule` validation rule and
+`Smwks\LaravelEdtf\Humanizer` are usable outside Filament — `EdtfRule` in
+any Laravel validator, `Humanizer::toReadable()` anywhere you display a
+stored value.
 
 ## EDTF scope
 

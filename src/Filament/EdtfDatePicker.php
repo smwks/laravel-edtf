@@ -2,70 +2,121 @@
 
 namespace Smwks\LaravelEdtf\Filament;
 
-use Filament\Forms\Components\Field;
-use Filament\Forms\Components\Select;
+use Filament\Actions\Action;
 use Filament\Forms\Components\TextInput;
-use Filament\Support\Concerns\CanBeContained;
+use Filament\Schemas\Components\Component;
+use Filament\Schemas\Components\Flex;
+use Filament\Schemas\Components\Text;
 use Smwks\LaravelEdtf\Edtf;
+use Smwks\LaravelEdtf\EdtfGuesser;
 use Smwks\LaravelEdtf\Exceptions\InvalidEdtfException;
+use Smwks\LaravelEdtf\Humanizer;
 use Smwks\LaravelEdtf\Parser;
+use Smwks\LaravelEdtf\Precision;
+use Smwks\LaravelEdtf\Rules\EdtfRule;
 
-class EdtfDatePicker extends Field
+class EdtfDatePicker extends TextInput
 {
-    use CanBeContained;
+    protected ?Precision $expectedPrecision = null;
 
-    protected string $view = 'filament-schemas::components.fieldset';
-
-    public static function make(?string $name = null): static
+    public function expectedPrecision(Precision|string|null $precision): static
     {
-        $static = parent::make($name);
+        $this->expectedPrecision = is_string($precision) ? Precision::from($precision) : $precision;
 
-        $static->schema([
-            Select::make('precision')
-                ->options(['year' => 'Year', 'month' => 'Month', 'day' => 'Day'])
-                ->default('day')
-                ->live()
-                ->required(),
-            TextInput::make('year')
-                ->numeric()
-                ->required(),
-            TextInput::make('month')
-                ->numeric()
-                ->visible(fn (callable $get) => in_array($get('precision'), ['month', 'day'], true)),
-            TextInput::make('day')
-                ->numeric()
-                ->visible(fn (callable $get) => $get('precision') === 'day'),
-        ]);
+        return $this;
+    }
 
-        $static->afterStateHydrated(static function (EdtfDatePicker $component): void {
-            $component->hydrateSubState();
+    public function getExpectedPrecision(): ?Precision
+    {
+        return $this->expectedPrecision;
+    }
+
+    public function currentGuess(): ?string
+    {
+        $state = $this->getState();
+
+        return is_string($state) ? EdtfGuesser::guess($state) : null;
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->live(debounce: 500)
+            ->rule(new EdtfRule)
+            ->placeholder('e.g. 1926, 1937-11, 192X, 1926~')
+            ->belowContent(fn (?string $state): array => $this->belowContentComponents($state))
+            ->suffixAction($this->helperAction());
+
+        $this->afterStateHydrated(static function (EdtfDatePicker $component): void {
+            $component->hydrateFromStoredValue();
         });
-
-        return $static;
     }
 
     /**
-     * Fans this field's own state out to two dehydrated state-path keys:
-     * the plain date column and the `_edtf` column, given the field's own
-     * state path as the base for both. An empty field dehydrates null to
-     * both, matching the nullable columns the `edtf()` macro creates.
+     * Feedback rendered under the input: the humanized reading for a value
+     * that parses, or a "not a supported format" line plus a one-click
+     * "Use …" suggestion for one that does not but can be coerced. Driven by
+     * a live parse of the current value, so it survives the modal being
+     * opened and closed (which resets Filament's own error bag).
      *
-     * @param  mixed  $state  the field's own `array{precision?: ?string, year?: mixed, month?: mixed, day?: mixed}` sub-state, or null when the field is empty
+     * @return array<int, Component>
+     */
+    protected function belowContentComponents(?string $state): array
+    {
+        if ($state === null || trim($state) === '') {
+            return [];
+        }
+
+        if ($this->isValidEdtf($state)) {
+            $readable = $this->getExpectedPrecision() !== null
+                ? Humanizer::toApproximateReadable($state)
+                : Humanizer::toReadable($state);
+
+            return $readable === '' ? [] : [Text::make($readable)];
+        }
+
+        $row = [Text::make('Not a supported date format.')->color('danger')];
+
+        if (($guess = EdtfGuesser::guess($state)) !== null) {
+            $row[] = Action::make('applyEdtfSuggestion')
+                ->link()
+                ->label('Use "'.$guess.'"')
+                ->action(function () use ($guess): void {
+                    $this->state($guess);
+                });
+        }
+
+        return [Flex::make($row)];
+    }
+
+    protected function isValidEdtf(string $value): bool
+    {
+        try {
+            (new Parser)->parse($value);
+        } catch (InvalidEdtfException) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * @return array<string, ?string>
      */
     public function getStateToDehydrate(mixed $state): array
     {
         $statePath = $this->getStatePath();
-        $edtfString = is_array($state) ? $this->buildEdtfString($state) : null;
+        $value = is_string($state) ? trim($state) : null;
 
-        if ($edtfString === null) {
+        if ($value === null || $value === '') {
             return [
                 $statePath => null,
                 "{$statePath}_edtf" => null,
             ];
         }
 
-        $edtf = Edtf::parse($edtfString);
+        $edtf = Edtf::parse($value);
 
         return [
             $statePath => $edtf->bestGuess()->format('Y-m-d'),
@@ -73,45 +124,16 @@ class EdtfDatePicker extends Field
         ];
     }
 
-    /**
-     * Expands a saved record's `{name}_edtf` (or, failing that, its plain
-     * `{name}` date) back into the precision/year/month/day sub-state this
-     * field's own schema expects. Filament's default hydration only puts the
-     * raw column values on the state path, which the sub-fields cannot read.
-     */
-    private function hydrateSubState(): void
+    protected function hydrateFromStoredValue(): void
     {
-        $rawState = $this->getRawState();
+        $edtfString = $this->resolveStoredEdtfString();
 
-        if (is_array($rawState) && (array_key_exists('precision', $rawState) || array_key_exists('year', $rawState))) {
-            return;
+        if ($edtfString !== null) {
+            $this->state($edtfString);
         }
-
-        $edtfString = $this->resolveStoredEdtfString($rawState);
-
-        if ($edtfString === null) {
-            return;
-        }
-
-        try {
-            $components = (new Parser)->parse($edtfString)['components'];
-        } catch (InvalidEdtfException) {
-            return;
-        }
-
-        $this->state([
-            'precision' => match (true) {
-                isset($components['day']) => 'day',
-                isset($components['month']) => 'month',
-                default => 'year',
-            },
-            'year' => $components['year']['digits'],
-            'month' => $components['month']['digits'] ?? null,
-            'day' => $components['day']['digits'] ?? null,
-        ]);
     }
 
-    private function resolveStoredEdtfString(mixed $rawState): ?string
+    protected function resolveStoredEdtfString(): ?string
     {
         $stored = data_get($this->getLivewire(), $this->getStatePath().'_edtf');
 
@@ -133,6 +155,8 @@ class EdtfDatePicker extends Field
             return $stored;
         }
 
+        $rawState = $this->getRawState();
+
         if (is_string($rawState) && $rawState !== '') {
             return substr($rawState, 0, 10);
         }
@@ -140,34 +164,21 @@ class EdtfDatePicker extends Field
         return null;
     }
 
-    /**
-     * @param  array{precision?: ?string, year?: mixed, month?: mixed, day?: mixed}  $state
-     */
-    private function buildEdtfString(array $state): ?string
+    protected function helperAction(): Action
     {
-        $rawYear = $state['year'] ?? null;
+        return Action::make('edtfHelper')
+            ->label('Date helper')
+            ->icon('heroicon-o-calendar-days')
+            ->modalHeading('Build a date')
+            ->modalSubmitActionLabel('Apply')
+            ->fillForm(fn (EdtfDatePicker $component): array => EdtfHelperSchema::preFill($component->currentGuess() ?? $component->getState()))
+            ->schema(fn (): array => EdtfHelperSchema::schema($this->getExpectedPrecision()))
+            ->action(function (array $data, EdtfDatePicker $component): void {
+                $assembled = EdtfHelperSchema::assemble($data);
 
-        if ($rawYear === null || $rawYear === '') {
-            return null;
-        }
-
-        $precision = $state['precision'] ?? null;
-        $year = str_pad((string) $rawYear, 4, '0', STR_PAD_LEFT);
-        $rawMonth = $state['month'] ?? null;
-
-        if ($precision === 'year' || $rawMonth === null || $rawMonth === '') {
-            return $year;
-        }
-
-        $month = str_pad((string) $rawMonth, 2, '0', STR_PAD_LEFT);
-        $rawDay = $state['day'] ?? null;
-
-        if ($precision === 'month' || $rawDay === null || $rawDay === '') {
-            return "{$year}-{$month}";
-        }
-
-        $day = str_pad((string) $rawDay, 2, '0', STR_PAD_LEFT);
-
-        return "{$year}-{$month}-{$day}";
+                if ($assembled !== '') {
+                    $component->state($assembled);
+                }
+            });
     }
 }
