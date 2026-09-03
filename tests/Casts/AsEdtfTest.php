@@ -70,3 +70,22 @@ test('the stored JSON contains edtf, min, and max', function () {
         'max' => '1926-12-31',
     ]);
 });
+
+test('attributesToArray serializes the cast to a JSON-safe array, not an Edtf object', function () {
+    $model = EdtfTestModel::create(['born_on_edtf' => '1929?']);
+
+    $serialized = EdtfTestModel::find($model->id)->attributesToArray()['born_on_edtf'];
+
+    expect($serialized)->toBe([
+        'edtf' => '1929?',
+        'min' => '1929-01-01',
+        'max' => '1929-12-31',
+    ]);
+});
+
+test('a null cast attribute serializes as null in attributesToArray', function () {
+    $model = EdtfTestModel::create(['born_on_edtf' => null]);
+
+    expect($model->fresh()->attributesToArray())->toHaveKey('born_on_edtf')
+        ->and($model->fresh()->attributesToArray()['born_on_edtf'])->toBeNull();
+});
